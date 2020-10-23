@@ -10,13 +10,13 @@
 Provide a low level primitive for storing tracked values:
 
 ```js
-let storage = createStorage();
+let storage = Storage();
 
 // Set the value of the storage
-setValue(storage, 123);
+storage.set(123);
 
 // Get the value of the storage
-getValue(storage);
+storage.get();
 ```
 
 ## Motivation
@@ -143,44 +143,50 @@ This RFC proposes adding the following APIs, exported from
 `@glimmer/tracking/primitives/storage`:
 
 ```ts
-declare function createStorage<T>(
+interface Storage<T> {
+  get(): T;
+  set(value: T): void;
+}
+
+declare function Storage<T>(
   initialValue?: T,
-  isEqual?: (oldValue: T, newValue: T) => boolean
+  isStable?: (oldValue: T, newValue: T) => boolean
 ): Storage<T>;
-
-declare function getValue<T>(storage: Storage<T>): T;
-
-declare function setValue<T>(storage: Storage<T>, value: T): void;
 ```
 
-### `createStorage`
+### `Storage`
 
 This function creates and returns an instance of a tracked storage. Tracked
-storage instances contain one value, which can be read with `getValue` and set
-with `setValue`. Reading the value consumes it, so that any tracked computations
+storage instances contain one value, which can be read with the `get` method and set
+with the `set` method. Reading the value consumes it, so that any tracked computations
 which are currently active will become entangled with it, and setting value
 later will dirty it and cause them to recompute. Creating the value does _not_
 consume it.
 
-`createStorage` can receive an optional initial value as its first parameter.
-It also receives an optional `isEqual` function. This function runs whenever the
-value is about to be set, and determines if the value is equal to the previous
-value. If it is equal, it does not set the value or dirty it. This defaults to
-`===` equality.
+`Storage` can receive an optional initial value as its first parameter.
+It also receives an optional `isStable` function. This function runs whenever the
+value is about to be set, and determines if the value is stable. If it is
+stable, it does not set the value or dirty it. This defaults to `===` equality.
 
-### `getValue`
+The `Storage` function is _not_ a class constructor. Calling `new Storage()`
+does not return a storage value, and `instanceof Storage` is not a valid way to
+determine if an object is an istance of a tracked storage.
 
-This function receives a tracked storage instance, and returns the value it
-contains, consuming it so that it entangles with any currently active
-autotracking contexts.
+### `get`
 
-### `setValue`
+This method returns the value the tracked storage contains, consuming it so that
+it entangles with any currently active autotracking contexts.
 
-This function receives a tracked storage instance and a value, and sets the
-value of the tracked storage to the passed value if it is not equal to the
-previous value. If the value is set, it will dirty the storage, causing any
-tracked computations which consumed the stored value to recompute. If the value
-was _not_ changed, then it does not set the value or dirty it.
+`get` does not interoperate with `Ember.get`. It must be called directly.
+
+### `set`
+
+This method sets the value of the tracked storage to the passed value if it is
+not equal to the previous value. If the value is set, it will dirty the storage,
+causing any tracked computations which consumed the stored value to recompute.
+If the value was _not_ changed, then it does not set the value or dirty it.
+
+`set` does not interoperate with `Ember.set`. It must be called directly.
 
 ### Re-implementing `@tracked` with storage
 
@@ -195,7 +201,7 @@ function tracked(target, key, { initializer }) {
     let storage = storages.get(obj);
 
     if (storage === undefined) {
-      storage = createStorage(initializer.call(this), () => true);
+      storage = Storage(initializer.call(this), () => true);
       storages.set(this, storage);
     }
 
@@ -204,11 +210,11 @@ function tracked(target, key, { initializer }) {
 
   return {
     get() {
-      return getValue(getStorage(this));
+      return getStorage(this).get();
     },
 
     set(value) {
-      return setValue(getStorage(this), value);
+      return getStorage(this).set(value);
     },
   };
 }
@@ -287,21 +293,17 @@ class Person {
 }
 
 // could be thought of as:
-import {
-  createStorage,
-  getValue,
-  setValue
-} from '@glimmer/tracking/primitives/storage';
+import { Storage } from '@glimmer/tracking/primitives/storage';
 
 class Person {
-  #name = createStorage();
+  #name = Storage();
 
   get name() {
-    return getValue(this.#name);
+    return this.#name.get();
   }
 
   set name(value) {
-    setValue(this.#name, value);
+    this.#name.set(value);
   }
 }
 ```
@@ -342,16 +344,11 @@ class TrackedMap {
 }
 ```
 
-Now, we need to add our tracked storage. We'll use the `createStorage` API to do
-this.
+Now, we need to add our tracked storage. We'll use the `Storage` API to do this.
 
 ```js
 // app/utils/tracked-map.js
-import {
-  createStorage,
-  getValue,
-  setValue,
-} from '@glimmer/tracking/primitives/storage';
+import { Storage } from '@glimmer/tracking/primitives/storage';
 
 class TrackedMap {
   #map = new Map();
@@ -366,7 +363,7 @@ class TrackedMap {
     let storage = this.#map.get(key);
 
     if (storage === undefined) {
-      storage = createStorage();
+      storage = Storage();
       this.#map.set(key, storage);
     }
 
@@ -374,15 +371,15 @@ class TrackedMap {
   }
 
   get(key) {
-    return getValue(this._getStorage(key));
+    return this._getStorage(key).get();
   }
 
   set(key, value) {
-    setValue(this._getStorage(key), value);
+    this._getStorage(key).set(value);
   }
 
   forEach(fn) {
-    this.#map.forEach((storage, key) => fn(getValue(storage, key, this)));
+    this.#map.forEach((storage, key) => fn(storage.get(), key, this));
   }
 
   // Other methods and APIs omitted...
@@ -391,12 +388,12 @@ class TrackedMap {
 
 Now, instead of setting values directly in our internal private map, we're
 wrapping those values in tracked storage. We create the storage instances with
-`createStorage`, we get the value from them with `getValue`, and we set
-the value in the with `setValue`. Each tracked storage contains exactly one
-value, and whenever we read that value with `getValue`, it is consumed in any
+`Storage`, we get the value from them with the `get` method, and we set
+the value in the with `set` method. Each tracked storage contains exactly one
+value, and whenever we read that value with `get`, it is consumed in any
 tracked computations that are currently occuring - just like reading the value
 of a tracked property. Likewise, setting the value of a tracked storage instance
-with `setValue` will dirty it, and cause any tracked computations which used it
+with `set` will dirty it, and cause any tracked computations which used it
 previously to recompute, just like setting the value of a tracked property.
 
 There's just one issue with this implementation so far - what happens to
@@ -410,15 +407,11 @@ the collection in it.
 
 ```js
 // app/utils/tracked-map.js
-import {
-  createStorage,
-  getValue,
-  setValue,
-} from '@glimmer/tracking/primitives/storage';
+import { Storage } from '@glimmer/tracking/primitives/storage';
 
 class TrackedMap {
   #map = new Map();
-  #collection = createStorage(this, () => true);
+  #collection = Storage(this, () => true);
 
   constructor(initialValues) {
     for (let [key, value] of initialValues) {
@@ -430,7 +423,7 @@ class TrackedMap {
     let storage = this.#map.get(key);
 
     if (storage === undefined) {
-      storage = createStorage();
+      storage = Storage();
       this.#map.set(key, storage);
     }
 
@@ -438,19 +431,19 @@ class TrackedMap {
   }
 
   get(key) {
-    return getValue(this._getStorage(key));
+    return this._getStorage(key).get();
   }
 
   set(key, value) {
     // dirty the collection state
-    setValue(this.#collection, this);
-    setValue(this._getStorage(key), value);
+    this.#collection.set(this);
+    this._getStorage(key).set(value);
   }
 
   forEach(fn) {
     // Entangle the collection state
-    getValue(this.#collection);
-    this.#map.forEach((storage, key) => fn(getValue(storage, key, this)));
+    this.#collection.get();
+    this.#map.forEach((storage, key) => fn(storage.get(), key, this));
   }
 
   // Other methods and APIs omitted...
@@ -461,8 +454,8 @@ Now we have a storage that we use to represent the value of the collection
 itself. We pass a custom equality function to this storage which always returns
 `true`, meaning that whenever we set the value of this storage, it will _always_
 notify, even if the value hasn't changed. We then entangle the collection
-storage in `forEach` by using `getValue` on it, even though we don't actually
-use the value, and we dirty with `setValue` whenever we `set` a value. Since we
+storage in `forEach` by hgetting its value, even though we don't actually
+use the value, and we dirty it whenever we `set` a value. Since we
 used a custom equality function that will always notify, we can set it to the
 collection itself again.
 
